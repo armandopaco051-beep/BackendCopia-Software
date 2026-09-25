@@ -24,7 +24,7 @@ def local_name(tag: str) -> str:
         return tag.rsplit("}", 1)[1]
     return tag.split(":")[-1]
 
-
+        
 def attr_by_suffix(element: ET.Element, suffix: str) -> str | None:
     for key, value in element.attrib.items():
         if key == suffix or key.endswith(f"}}{suffix}") or key.endswith(f":{suffix}"):
