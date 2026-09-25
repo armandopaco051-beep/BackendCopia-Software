@@ -13,6 +13,9 @@ STANDARD_PROFILE = "standard"
 ENTERPRISE_ARCHITECT_PROFILE = "enterprise_architect"
 DEFAULT_NODE_WIDTH = 245
 DEFAULT_NODE_HEIGHT = 180
+EA_LAYOUT_MAX_WIDTH = 960
+EA_LAYOUT_MAX_HEIGHT = 720
+EA_LAYOUT_MARGIN = 40
 
 ET.register_namespace("xmi", XMI_NS)
 ET.register_namespace("uml", UML_NS)
@@ -83,6 +86,38 @@ def geometry_value(left: float, top: float, width: float, height: float):
         f"Right={integer_coordinate(left + width)};"
         f"Bottom={integer_coordinate(top + height)};"
     )
+
+
+def normalized_diagram_positions(nodes: list[dict[str, Any]]):
+    if not nodes:
+        return {}, 1.0
+
+    raw_positions = {str(node.get("id")): get_node_position(node) for node in nodes}
+    min_x = min(position[0] for position in raw_positions.values())
+    min_y = min(position[1] for position in raw_positions.values())
+    max_right = max(
+        raw_positions[str(node.get("id"))][0] + get_node_size(node)[0]
+        for node in nodes
+    )
+    max_bottom = max(
+        raw_positions[str(node.get("id"))][1] + get_node_size(node)[1]
+        for node in nodes
+    )
+    content_width = max(max_right - min_x, 1)
+    content_height = max(max_bottom - min_y, 1)
+    scale = min(
+        1.0,
+        EA_LAYOUT_MAX_WIDTH / content_width,
+        EA_LAYOUT_MAX_HEIGHT / content_height,
+    )
+    normalized = {
+        node_id: (
+            EA_LAYOUT_MARGIN + (position[0] - min_x) * scale,
+            EA_LAYOUT_MARGIN + (position[1] - min_y) * scale,
+        )
+        for node_id, position in raw_positions.items()
+    }
+    return normalized, scale
 
 
 def ea_guid(prefix: str, value: str):
@@ -974,20 +1009,18 @@ def add_enterprise_architect_diagram(
         for node in contenido.get("nodes", [])
         if str(node.get("id")) in class_elements
     ]
-    positions = [get_node_position(node) for node in visible_nodes]
-    min_x = min((position[0] for position in positions), default=0)
-    min_y = min((position[1] for position in positions), default=0)
+    normalized_positions, _ = normalized_diagram_positions(visible_nodes)
 
     for index, node in enumerate(visible_nodes, start=1):
         node_id = str(node.get("id"))
-        x, y = get_node_position(node)
+        x, y = normalized_positions[node_id]
         width, height = get_node_size(node)
         ET.SubElement(
             diagram_elements,
             "element",
             {
                 "subject": safe_id(node_id),
-                "geometry": geometry_value(40 + x - min_x, 40 + y - min_y, width, height),
+                "geometry": geometry_value(x, y, width, height),
                 "seqno": str(index),
                 "style": f"DUID={diagram_object_id(node_id)};",
             },
