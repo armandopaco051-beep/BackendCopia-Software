@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import html
 import xml.etree.ElementTree as ET
 from typing import Any
 
 
 XMI_NS = "http://www.omg.org/spec/XMI/20131001"
 UML_NS = "http://www.omg.org/spec/UML/20131001"
+STANDARD_PROFILE = "standard"
+ENTERPRISE_ARCHITECT_PROFILE = "enterprise_architect"
+DEFAULT_NODE_WIDTH = 245
+DEFAULT_NODE_HEIGHT = 180
 
 ET.register_namespace("xmi", XMI_NS)
 ET.register_namespace("uml", UML_NS)
@@ -34,6 +37,49 @@ def get_node_name(node: dict[str, Any]):
 def get_relation_type(edge: dict[str, Any]):
     data = edge.get("data") or {}
     return data.get("relationType") or edge.get("type") or "association"
+
+
+def numeric_value(value: Any, default: float):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_node_size(node: dict[str, Any]):
+    data = node.get("data") or {}
+    style = node.get("style") or {}
+    measured = node.get("measured") or {}
+    attribute_count = max(len(data.get("attributes") or []), 1)
+    method_count = max(len(data.get("methods") or []), 1)
+    content_height = 46 + 40 + attribute_count * 22 + method_count * 22 + 12
+    width = numeric_value(
+        style.get("width", node.get("width", measured.get("width"))),
+        DEFAULT_NODE_WIDTH,
+    )
+    height = numeric_value(
+        style.get("height", node.get("height", measured.get("height"))),
+        max(DEFAULT_NODE_HEIGHT, content_height),
+    )
+    return max(width, DEFAULT_NODE_WIDTH), max(height, DEFAULT_NODE_HEIGHT, content_height)
+
+
+def get_node_position(node: dict[str, Any]):
+    position = node.get("position") or {}
+    return numeric_value(position.get("x"), 0), numeric_value(position.get("y"), 0)
+
+
+def integer_coordinate(value: float):
+    return str(int(round(value)))
+
+
+def geometry_value(left: float, top: float, width: float, height: float):
+    return (
+        f"Left={integer_coordinate(left)};"
+        f"Top={integer_coordinate(top)};"
+        f"Right={integer_coordinate(left + width)};"
+        f"Bottom={integer_coordinate(top + height)};"
+    )
 
 
 def normalize_parameter(parameter: Any, index: int):
@@ -260,6 +306,24 @@ def add_association(model: ET.Element, edge: dict[str, Any]):
     add_binary_association_ends(association, edge, relation_id)
 
 
+def add_directed_relation(model: ET.Element, edge: dict[str, Any]):
+    relation_type = get_relation_type(edge)
+    source = safe_id(str(edge.get("source")))
+    target = safe_id(str(edge.get("target")))
+    relation_id = safe_id(str(edge.get("id") or f"rel_{source}_{target}"))
+    uml_type = "uml:Realization" if relation_type == "realization" else "uml:Dependency"
+    attributes = {
+        xmi_attr("type"): uml_type,
+        xmi_attr("id"): relation_id,
+        "client": source,
+        "supplier": target,
+    }
+    if relation_type == "templateBinding":
+        attributes["name"] = "templateBinding"
+
+    ET.SubElement(model, "packagedElement", attributes)
+
+
 def add_association_class(
     class_elements: dict[str, ET.Element],
     edge: dict[str, Any],
@@ -277,7 +341,123 @@ def add_association_class(
     )
 
 
-def diagram_content_to_xmi(contenido: dict[str, Any], nombre: str = "DrawSchemaModel"):
+def exported_relation_id(edge: dict[str, Any]):
+    relation_type = get_relation_type(edge)
+    source = safe_id(str(edge.get("source")))
+    target = safe_id(str(edge.get("target")))
+
+    if relation_type == "generalization":
+        return safe_id(str(edge.get("id") or f"gen_{source}_{target}"))
+    if relation_type in {"association", "composition", "aggregation"}:
+        return safe_id(str(edge.get("id") or f"rel_{source}_{target}"))
+    if relation_type in {"realization", "templateBinding"}:
+        return safe_id(str(edge.get("id") or f"rel_{source}_{target}"))
+    if relation_type == "associationClass":
+        association_class_id = (edge.get("data") or {}).get("associationClassId")
+        return safe_id(str(association_class_id)) if association_class_id else None
+    return None
+
+
+def add_enterprise_architect_diagram(
+    root: ET.Element,
+    contenido: dict[str, Any],
+    nombre: str,
+    class_elements: dict[str, ET.Element],
+    relation_ids: set[str],
+):
+    extension = ET.SubElement(
+        root,
+        xmi_attr("Extension"),
+        {
+            "extender": "Enterprise Architect",
+            "extenderID": "6.5",
+        },
+    )
+    diagrams = ET.SubElement(extension, "diagrams")
+    diagram_id = f"EAID_{safe_id(nombre or 'DrawSchemaDiagram')}"
+    diagram = ET.SubElement(
+        diagrams,
+        "diagram",
+        {
+            xmi_attr("id"): diagram_id,
+            "name": str(nombre or "DrawSchema Diagram"),
+            "owner": "DrawSchemaModel",
+        },
+    )
+    ET.SubElement(
+        diagram,
+        "model",
+        {
+            "package": "DrawSchemaModel",
+            "localID": "1",
+        },
+    )
+    ET.SubElement(
+        diagram,
+        "properties",
+        {
+            "name": str(nombre or "DrawSchema Diagram"),
+            "type": "Logical",
+        },
+    )
+    diagram_elements = ET.SubElement(diagram, "elements")
+
+    visible_nodes = [
+        node
+        for node in contenido.get("nodes", [])
+        if str(node.get("id")) in class_elements
+    ]
+    positions = [get_node_position(node) for node in visible_nodes]
+    min_x = min((position[0] for position in positions), default=0)
+    min_y = min((position[1] for position in positions), default=0)
+
+    for index, node in enumerate(visible_nodes, start=1):
+        node_id = str(node.get("id"))
+        x, y = get_node_position(node)
+        width, height = get_node_size(node)
+        ET.SubElement(
+            diagram_elements,
+            "element",
+            {
+                "subject": safe_id(node_id),
+                "geometry": geometry_value(40 + x - min_x, 40 + y - min_y, width, height),
+                "seqno": str(index),
+            },
+        )
+
+    diagram_links = ET.SubElement(diagram, "links")
+    for edge in contenido.get("edges", []):
+        relation_id = exported_relation_id(edge)
+        if relation_id is None or relation_id not in relation_ids:
+            continue
+
+        source = str(edge.get("source"))
+        target = str(edge.get("target"))
+        if source not in class_elements or target not in class_elements:
+            continue
+
+        ET.SubElement(
+            diagram_links,
+            "link",
+            {
+                "subject": relation_id,
+                "connector": relation_id,
+                "source": safe_id(source),
+                "target": safe_id(target),
+                "geometry": "SX=0;SY=0;EX=0;EY=0;",
+                "style": f"Mode=3;SOID={safe_id(source)};EOID={safe_id(target)};",
+            },
+        )
+
+
+def diagram_content_to_xmi(
+    contenido: dict[str, Any],
+    nombre: str = "DrawSchemaModel",
+    profile: str = STANDARD_PROFILE,
+):
+    if profile not in {STANDARD_PROFILE, ENTERPRISE_ARCHITECT_PROFILE}:
+        raise ValueError(f"Perfil XMI no soportado: {profile}")
+
     root = ET.Element(
         f"{{{XMI_NS}}}XMI",
         {
@@ -290,7 +470,7 @@ def diagram_content_to_xmi(contenido: dict[str, Any], nombre: str = "DrawSchemaM
         f"{{{UML_NS}}}Model",
         {
             xmi_attr("id"): "DrawSchemaModel",
-            "name": html.escape(nombre),
+            "name": str(nombre),
         },
     )
 
@@ -310,6 +490,7 @@ def diagram_content_to_xmi(contenido: dict[str, Any], nombre: str = "DrawSchemaM
             force_association_class=node_id in association_class_ids,
         )
 
+    relation_ids: set[str] = set()
     for edge in contenido.get("edges", []):
         relation_type = get_relation_type(edge)
 
@@ -319,6 +500,21 @@ def diagram_content_to_xmi(contenido: dict[str, Any], nombre: str = "DrawSchemaM
             add_association(model, edge)
         elif relation_type == "associationClass":
             add_association_class(class_elements, edge)
+        elif relation_type in {"realization", "templateBinding"}:
+            add_directed_relation(model, edge)
+
+        relation_id = exported_relation_id(edge)
+        if relation_id:
+            relation_ids.add(relation_id)
+
+    if profile == ENTERPRISE_ARCHITECT_PROFILE:
+        add_enterprise_architect_diagram(
+            root=root,
+            contenido=contenido,
+            nombre=nombre,
+            class_elements=class_elements,
+            relation_ids=relation_ids,
+        )
 
     ET.indent(root, space="  ")
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)

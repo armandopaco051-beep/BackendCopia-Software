@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -160,6 +162,9 @@ async def importar_xmi_en_diagrama_existente(
 @router.get("/diagramas/{diagrama_id}/export/xmi")
 def exportar_xmi(
     diagrama_id: int,
+    profile: Literal["standard", "enterprise_architect"] = Query(
+        default="enterprise_architect"
+    ),
     db: Session = Depends(get_db),
     usuario_actual: Usuario = Depends(get_current_user),
 ):
@@ -173,9 +178,11 @@ def exportar_xmi(
     xmi_bytes = diagram_content_to_xmi(
         contenido=normalizar_contenido(diagrama.contenido),
         nombre=diagrama.nombre,
+        profile=profile,
     )
 
-    filename = f"{diagrama.nombre.replace(' ', '_')}.xmi"
+    profile_suffix = "_EA" if profile == "enterprise_architect" else ""
+    filename = f"{diagrama.nombre.replace(' ', '_')}{profile_suffix}.xmi"
 
     return Response(
         content=xmi_bytes,
