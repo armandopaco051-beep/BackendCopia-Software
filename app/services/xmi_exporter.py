@@ -90,6 +90,18 @@ def ea_guid(prefix: str, value: str):
     return f"{prefix}_{str(generated).replace('-', '_').upper()}"
 
 
+def diagram_object_id(value: str):
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"drawschema:diagram-object:{value}").hex[:8].upper()
+
+
+def feature_id(node_id: str, feature_type: str, index: int):
+    return ea_guid("EAID", f"{node_id}:{feature_type}:{index}")
+
+
+def ea_braced_guid(value: str):
+    return f"{{{value.removeprefix('EAID_').replace('_', '-')}}}"
+
+
 def normalize_parameter(parameter: Any, index: int):
     if isinstance(parameter, dict):
         return {
@@ -103,10 +115,65 @@ def normalize_parameter(parameter: Any, index: int):
     }
 
 
+def boolean_value(value: Any, default: bool = False):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "si"}
+    return bool(value)
+
+
+def uml_visibility(value: Any, default: str = "private"):
+    normalized = str(value or default).strip().lower()
+    return normalized if normalized in {"public", "private", "protected", "package"} else default
+
+
+def ea_visibility(value: Any, default: str = "Private"):
+    return uml_visibility(value, default.lower()).capitalize()
+
+
+def attribute_type(attribute: dict[str, Any]):
+    return str(attribute.get("type") or attribute.get("tipo") or "String").strip() or "String"
+
+
+def method_return_type(method: dict[str, Any]):
+    return str(method.get("returnType") or method.get("tipoRetorno") or "void").strip() or "void"
+
+
+def collect_used_types(contenido: dict[str, Any]):
+    used_types: dict[str, str] = {}
+    for node in contenido.get("nodes", []):
+        data = node.get("data") or {}
+        for attribute in data.get("attributes") or []:
+            type_name = attribute_type(attribute)
+            used_types.setdefault(type_name.casefold(), type_name)
+        for method in data.get("methods") or []:
+            return_type = method_return_type(method)
+            if return_type.casefold() != "void":
+                used_types.setdefault(return_type.casefold(), return_type)
+            for index, parameter in enumerate(method.get("parameters") or []):
+                normalized = normalize_parameter(parameter, index)
+                type_name = normalized["type"].strip() or "String"
+                used_types.setdefault(type_name.casefold(), type_name)
+    return list(used_types.values())
+
+
+def primitive_type_id(type_name: str):
+    return f"EAJava_{safe_id(type_name)}"
+
+
+def add_type_reference(element: ET.Element, type_name: str, type_ids: dict[str, str] | None):
+    if type_ids is None:
+        element.set("type", type_name)
+        return
+    ET.SubElement(element, "type", {xmi_attr("idref"): type_ids[type_name.casefold()]})
+
+
 def create_class_element(
     model: ET.Element,
     node: dict[str, Any],
     force_association_class: bool = False,
+    type_ids: dict[str, str] | None = None,
 ):
     data = node.get("data") or {}
     node_id = str(node.get("id"))
@@ -121,6 +188,7 @@ def create_class_element(
         xmi_attr("type"): element_type,
         xmi_attr("id"): safe_id(node_id),
         "name": str(get_node_name(node)),
+        "visibility": uml_visibility(data.get("visibility"), "public"),
     }
     if kind == "abstractClass":
         element_attributes["isAbstract"] = "true"
@@ -132,65 +200,112 @@ def create_class_element(
     )
 
     for attr_index, attribute in enumerate(data.get("attributes") or []):
-        attr_id = f"{safe_id(node_id)}_attr_{attr_index + 1}"
+        attr_id = feature_id(node_id, "attribute", attr_index + 1)
         owned_attribute = ET.SubElement(
             class_element,
             "ownedAttribute",
             {
+                xmi_attr("type"): "uml:Property",
                 xmi_attr("id"): attr_id,
                 "name": str(attribute.get("name") or f"atributo{attr_index + 1}"),
-                "type": str(attribute.get("type") or "String"),
+                "visibility": uml_visibility(attribute.get("visibility")),
+                "isStatic": str(boolean_value(attribute.get("static"))).lower(),
+                "isReadOnly": str(boolean_value(attribute.get("readOnly"))).lower(),
+                "isDerived": str(boolean_value(attribute.get("derived"))).lower(),
+                "isOrdered": str(boolean_value(attribute.get("ordered"))).lower(),
+                "isUnique": str(boolean_value(attribute.get("unique"), True)).lower(),
+                "isDerivedUnion": "false",
             },
         )
-
-        if attribute.get("nullable") is False:
+        nullable = boolean_value(attribute.get("nullable"), True)
+        ET.SubElement(
+            owned_attribute,
+            "lowerValue",
+            {
+                xmi_attr("type"): "uml:LiteralInteger",
+                xmi_attr("id"): f"{attr_id}_lower",
+                "value": "0" if nullable else "1",
+            },
+        )
+        ET.SubElement(
+            owned_attribute,
+            "upperValue",
+            {
+                xmi_attr("type"): "uml:LiteralInteger",
+                xmi_attr("id"): f"{attr_id}_upper",
+                "value": "1",
+            },
+        )
+        add_type_reference(owned_attribute, attribute_type(attribute), type_ids)
+        default_value = attribute.get("defaultValue", attribute.get("default"))
+        if default_value not in {None, ""}:
             ET.SubElement(
                 owned_attribute,
-                "lowerValue",
+                "defaultValue",
                 {
-                    xmi_attr("type"): "uml:LiteralInteger",
-                    xmi_attr("id"): f"{attr_id}_lower",
-                    "value": "1",
+                    xmi_attr("type"): "uml:LiteralString",
+                    xmi_attr("id"): f"{attr_id}_default",
+                    "value": str(default_value),
                 },
             )
 
     for method_index, method in enumerate(data.get("methods") or []):
-        method_id = f"{safe_id(node_id)}_op_{method_index + 1}"
+        method_id = feature_id(node_id, "operation", method_index + 1)
         operation = ET.SubElement(
             class_element,
             "ownedOperation",
             {
+                xmi_attr("type"): "uml:Operation",
                 xmi_attr("id"): method_id,
                 "name": str(method.get("name") or f"metodo{method_index + 1}"),
+                "visibility": uml_visibility(method.get("visibility"), "public"),
+                "isStatic": str(boolean_value(method.get("static"))).lower(),
+                "isAbstract": str(boolean_value(method.get("abstract"))).lower(),
             },
         )
 
         for param_index, parameter in enumerate(method.get("parameters") or []):
             normalized_parameter = normalize_parameter(parameter, param_index)
-
-            ET.SubElement(
+            parameter_element = ET.SubElement(
                 operation,
                 "ownedParameter",
                 {
-                    xmi_attr("id"): f"{method_id}_param_{param_index + 1}",
+                    xmi_attr("type"): "uml:Parameter",
+                    xmi_attr("id"): feature_id(node_id, f"operation-{method_index + 1}-parameter", param_index + 1),
                     "name": normalized_parameter["name"],
-                    "type": normalized_parameter["type"],
+                    "direction": "in",
                 },
             )
+            add_type_reference(
+                parameter_element,
+                normalized_parameter["type"],
+                type_ids,
+            )
+            if type_ids is not None:
+                type_child = parameter_element.find("type")
+                if type_child is not None:
+                    parameter_element.remove(type_child)
+                parameter_element.set("type", type_ids[normalized_parameter["type"].casefold()])
 
-        return_type = method.get("returnType")
+        return_type = method_return_type(method)
 
-        if return_type and return_type != "void":
-            ET.SubElement(
+        if return_type.casefold() != "void":
+            return_parameter = ET.SubElement(
                 operation,
                 "ownedParameter",
                 {
-                    xmi_attr("id"): f"{method_id}_return",
+                    xmi_attr("type"): "uml:Parameter",
+                    xmi_attr("id"): feature_id(node_id, "return", method_index + 1),
                     "name": "return",
-                    "type": str(return_type),
                     "direction": "return",
                 },
             )
+            add_type_reference(return_parameter, return_type, type_ids)
+            if type_ids is not None:
+                type_child = return_parameter.find("type")
+                if type_child is not None:
+                    return_parameter.remove(type_child)
+                return_parameter.set("type", type_ids[return_type.casefold()])
 
     return class_element
 
@@ -264,14 +379,16 @@ def add_binary_association_ends(
     source_attrs = {
         xmi_attr("type"): "uml:Property",
         xmi_attr("id"): source_end_id,
-        "type": source,
         "association": association_id,
+        "visibility": "public",
+        "aggregation": "none",
     }
     target_attrs = {
         xmi_attr("type"): "uml:Property",
         xmi_attr("id"): target_end_id,
-        "type": target,
         "association": association_id,
+        "visibility": "public",
+        "aggregation": "none",
     }
 
     if data.get("sourceRole"):
@@ -287,6 +404,8 @@ def add_binary_association_ends(
 
     source_end = ET.SubElement(association, "ownedEnd", source_attrs)
     target_end = ET.SubElement(association, "ownedEnd", target_attrs)
+    ET.SubElement(source_end, "type", {xmi_attr("idref"): source})
+    ET.SubElement(target_end, "type", {xmi_attr("idref"): target})
     add_multiplicity(source_end, data.get("sourceCardinality", "1"), source_end_id)
     add_multiplicity(target_end, data.get("targetCardinality", "0..*"), target_end_id)
 
@@ -347,6 +466,21 @@ def add_association_class(
         edge,
         safe_id(association_class_id),
     )
+    children = list(association_class)
+    owned_ends = [child for child in children if child.tag == "ownedEnd"]
+    other_features = [child for child in children if child.tag != "ownedEnd"]
+    for child in children:
+        association_class.remove(child)
+    for owned_end in owned_ends:
+        ET.SubElement(
+            association_class,
+            "memberEnd",
+            {xmi_attr("idref"): owned_end.get(xmi_attr("id"), "")},
+        )
+    for owned_end in owned_ends:
+        association_class.append(owned_end)
+    for feature in other_features:
+        association_class.append(feature)
 
 
 def exported_relation_id(edge: dict[str, Any]):
@@ -361,27 +495,429 @@ def exported_relation_id(edge: dict[str, Any]):
     if relation_type in {"realization", "templateBinding"}:
         return safe_id(str(edge.get("id") or f"rel_{source}_{target}"))
     if relation_type == "associationClass":
-        association_class_id = (edge.get("data") or {}).get("associationClassId")
-        return safe_id(str(association_class_id)) if association_class_id else None
+        return safe_id(str(edge.get("id") or f"rel_{source}_{target}"))
     return None
 
 
+def node_extension_type(node: dict[str, Any], association_class_ids: set[str]):
+    node_id = str(node.get("id"))
+    kind = (node.get("data") or {}).get("kind") or "class"
+    if node_id in association_class_ids:
+        return "uml:Class", "Class", "17"
+    if kind == "interface":
+        return "uml:Interface", "Interface", "0"
+    return "uml:Class", "Class", "0"
+
+
+def relation_extension_name(edge: dict[str, Any]):
+    return {
+        "generalization": "Generalization",
+        "realization": "Realisation",
+        "templateBinding": "Dependency",
+    }.get(get_relation_type(edge), "Association")
+
+
+def add_ea_tag(tags: ET.Element, name: str, value: Any, model_element: str):
+    ET.SubElement(
+        tags,
+        "tag",
+        {
+            "name": name,
+            "value": str(value).lower() if isinstance(value, bool) else str(value),
+            "modelElement": model_element,
+        },
+    )
+
+
+def add_ea_attribute_metadata(
+    attributes_element: ET.Element,
+    node_id: str,
+    attribute: dict[str, Any],
+    index: int,
+):
+    attr_id = feature_id(node_id, "attribute", index + 1)
+    nullable = boolean_value(attribute.get("nullable"), True)
+    primary_key = boolean_value(
+        attribute.get("primaryKey", attribute.get("isPrimaryKey")),
+    )
+    foreign_key = boolean_value(
+        attribute.get("foreignKey", attribute.get("isForeignKey")),
+    )
+    metadata = ET.SubElement(
+        attributes_element,
+        "attribute",
+        {
+            xmi_attr("idref"): attr_id,
+            "name": str(attribute.get("name") or f"atributo{index + 1}"),
+            "scope": ea_visibility(attribute.get("visibility")),
+        },
+    )
+    default_value = attribute.get("defaultValue", attribute.get("default"))
+    ET.SubElement(metadata, "initial", {"body": str(default_value)}) if default_value not in {None, ""} else ET.SubElement(metadata, "initial")
+    ET.SubElement(metadata, "documentation")
+    ET.SubElement(metadata, "model", {"ea_localid": str(index + 1), "ea_guid": attr_id})
+    ET.SubElement(
+        metadata,
+        "properties",
+        {
+            "type": attribute_type(attribute),
+            "collection": "false",
+            "static": "1" if boolean_value(attribute.get("static")) else "0",
+            "duplicates": "0" if boolean_value(attribute.get("unique"), True) else "1",
+            "changeability": "frozen" if boolean_value(attribute.get("readOnly")) else "changeable",
+        },
+    )
+    ET.SubElement(metadata, "coords", {"ordered": "1" if boolean_value(attribute.get("ordered")) else "0"})
+    ET.SubElement(metadata, "containment", {"containment": "Not Specified", "position": str(index)})
+    stereotypes = []
+    if primary_key:
+        stereotypes.append("PK")
+    if foreign_key:
+        stereotypes.append("FK")
+    ET.SubElement(metadata, "stereotype", {"stereotype": ",".join(stereotypes)}) if stereotypes else ET.SubElement(metadata, "stereotype")
+    ET.SubElement(metadata, "bounds", {"lower": "0" if nullable else "1", "upper": "1"})
+    ET.SubElement(metadata, "options")
+    ET.SubElement(metadata, "style")
+    ET.SubElement(metadata, "styleex", {"value": "volatile=0;"})
+    tags = ET.SubElement(metadata, "tags")
+    add_ea_tag(tags, "nullable", nullable, attr_id)
+    if primary_key:
+        add_ea_tag(tags, "primaryKey", True, attr_id)
+    if foreign_key:
+        add_ea_tag(tags, "foreignKey", True, attr_id)
+    if boolean_value(attribute.get("unique")):
+        add_ea_tag(tags, "unique", True, attr_id)
+    ET.SubElement(metadata, "xrefs")
+
+
+def add_ea_operation_metadata(
+    operations_element: ET.Element,
+    node_id: str,
+    method: dict[str, Any],
+    index: int,
+):
+    method_id = feature_id(node_id, "operation", index + 1)
+    return_type = method_return_type(method)
+    metadata = ET.SubElement(
+        operations_element,
+        "operation",
+        {
+            xmi_attr("idref"): method_id,
+            "name": str(method.get("name") or f"metodo{index + 1}"),
+            "scope": ea_visibility(method.get("visibility"), "Public"),
+        },
+    )
+    ET.SubElement(metadata, "properties", {"position": str(index)})
+    ET.SubElement(metadata, "stereotype")
+    ET.SubElement(
+        metadata,
+        "model",
+        {"ea_localid": str(index + 1), "ea_guid": ea_braced_guid(method_id)},
+    )
+    ET.SubElement(
+        metadata,
+        "type",
+        {
+            "type": "" if return_type.casefold() == "void" else return_type,
+            "const": "false",
+            "static": str(boolean_value(method.get("static"))).lower(),
+            "isAbstract": str(boolean_value(method.get("abstract"))).lower(),
+            "synchronised": "0",
+            "pure": "0",
+            "isQuery": "false",
+        },
+    )
+    for child_name in ("behaviour", "code", "style", "styleex", "documentation", "tags"):
+        ET.SubElement(metadata, child_name)
+    parameters_element = ET.SubElement(metadata, "parameters")
+
+    if return_type.casefold() != "void":
+        return_id = feature_id(node_id, "return", index + 1)
+        return_parameter = ET.SubElement(
+            parameters_element,
+            "parameter",
+            {xmi_attr("idref"): return_id, "visibility": "public"},
+        )
+        ET.SubElement(
+            return_parameter,
+            "properties",
+            {
+                "pos": "0",
+                "type": return_type,
+                "const": "false",
+                "ea_guid": ea_braced_guid(return_id),
+            },
+        )
+        for child_name in ("style", "styleex", "documentation", "tags", "xrefs"):
+            ET.SubElement(return_parameter, child_name)
+
+    for param_index, parameter in enumerate(method.get("parameters") or []):
+        normalized = normalize_parameter(parameter, param_index)
+        parameter_id = feature_id(node_id, f"operation-{index + 1}-parameter", param_index + 1)
+        parameter_element = ET.SubElement(
+            parameters_element,
+            "parameter",
+            {
+                xmi_attr("idref"): parameter_id,
+                "visibility": "public",
+            },
+        )
+        ET.SubElement(
+            parameter_element,
+            "properties",
+            {
+                "pos": str(param_index),
+                "type": normalized["type"],
+                "const": "false",
+                "ea_guid": ea_braced_guid(parameter_id),
+            },
+        )
+        for child_name in ("style", "styleex", "documentation", "tags", "xrefs"):
+            ET.SubElement(parameter_element, child_name)
+    ET.SubElement(metadata, "xrefs")
+
+
+def add_ea_elements(
+    extension: ET.Element,
+    contenido: dict[str, Any],
+    package_id: str,
+    association_class_ids: set[str],
+):
+    elements = ET.SubElement(extension, "elements")
+    edges = contenido.get("edges") or []
+    association_edge_by_class = {
+        str((edge.get("data") or {}).get("associationClassId")): edge
+        for edge in edges
+        if get_relation_type(edge) == "associationClass"
+        and (edge.get("data") or {}).get("associationClassId")
+    }
+
+    for node_index, node in enumerate(contenido.get("nodes") or [], start=1):
+        node_id = str(node.get("id"))
+        safe_node_id = safe_id(node_id)
+        data = node.get("data") or {}
+        uml_type, ea_type, numeric_type = node_extension_type(node, association_class_ids)
+        element = ET.SubElement(
+            elements,
+            "element",
+            {
+                xmi_attr("idref"): safe_node_id,
+                xmi_attr("type"): uml_type,
+                "name": str(get_node_name(node)),
+                "scope": uml_visibility(data.get("visibility"), "public"),
+            },
+        )
+        ET.SubElement(
+            element,
+            "model",
+            {
+                "package": package_id,
+                "tpos": "0",
+                "ea_localid": str(1000 + node_index),
+                "ea_eleType": "element",
+            },
+        )
+        ET.SubElement(
+            element,
+            "properties",
+            {
+                "isSpecification": "false",
+                "sType": ea_type,
+                "nType": numeric_type,
+                "scope": uml_visibility(data.get("visibility"), "public"),
+                "isRoot": "false",
+                "isLeaf": "false",
+                "isAbstract": str((data.get("kind") == "abstractClass") or boolean_value(data.get("abstract"))).lower(),
+                "isActive": "false",
+            },
+        )
+        ET.SubElement(element, "project", {"author": "DrawSchema", "version": "1.0", "status": "Proposed"})
+        ET.SubElement(element, "code", {"gentype": "Java"})
+        ET.SubElement(element, "style", {"appearance": "BackColor=-1;BorderColor=-1;BorderWidth=-1;FontColor=-1;BorderStyle=0;"})
+        ET.SubElement(element, "tags")
+        ET.SubElement(element, "xrefs")
+        extended_attributes = {"tagged": "0", "package_name": package_id}
+        association_edge = association_edge_by_class.get(node_id)
+        if association_edge:
+            extended_attributes["conID"] = exported_relation_id(association_edge) or ""
+        ET.SubElement(element, "extendedProperties", extended_attributes)
+
+        attributes = data.get("attributes") or []
+        if attributes:
+            attributes_element = ET.SubElement(element, "attributes")
+            for attr_index, attribute in enumerate(attributes):
+                add_ea_attribute_metadata(attributes_element, node_id, attribute, attr_index)
+
+        methods = data.get("methods") or []
+        if methods:
+            operations_element = ET.SubElement(element, "operations")
+            for method_index, method in enumerate(methods):
+                add_ea_operation_metadata(operations_element, node_id, method, method_index)
+
+        related_edges = [
+            edge
+            for edge in edges
+            if str(edge.get("source")) == node_id or str(edge.get("target")) == node_id
+        ]
+        if related_edges:
+            links = ET.SubElement(element, "links")
+            for edge in related_edges:
+                relation_id = exported_relation_id(edge)
+                if not relation_id:
+                    continue
+                ET.SubElement(
+                    links,
+                    relation_extension_name(edge),
+                    {
+                        xmi_attr("id"): relation_id,
+                        "start": safe_id(str(edge.get("source"))),
+                        "end": safe_id(str(edge.get("target"))),
+                    },
+                )
+    return elements
+
+
+def add_ea_connector_end(
+    connector: ET.Element,
+    tag: str,
+    node: dict[str, Any],
+    cardinality: Any,
+    aggregation: str,
+    role_name: Any,
+):
+    node_id = safe_id(str(node.get("id")))
+    data = node.get("data") or {}
+    end = ET.SubElement(connector, tag, {xmi_attr("idref"): node_id})
+    ET.SubElement(end, "model", {"ea_localid": node_id, "type": "Class", "name": str(get_node_name(node))})
+    role_attributes = {"visibility": "Public", "targetScope": "instance"}
+    if role_name:
+        role_attributes["name"] = str(role_name)
+    ET.SubElement(end, "role", role_attributes)
+    type_attributes = {"aggregation": aggregation, "containment": "Unspecified"}
+    if cardinality:
+        type_attributes["multiplicity"] = str(cardinality)
+    ET.SubElement(end, "type", type_attributes)
+    ET.SubElement(end, "constraints")
+    ET.SubElement(end, "modifiers", {"isOrdered": "false", "changeable": "none", "isNavigable": "false"})
+    ET.SubElement(end, "style", {"value": "Union=0;Derived=0;AllowDuplicates=0;Owned=0;Navigable=Unspecified;"})
+    ET.SubElement(end, "documentation")
+    ET.SubElement(end, "xrefs")
+    ET.SubElement(end, "tags")
+    return data
+
+
+def add_ea_connectors(extension: ET.Element, contenido: dict[str, Any]):
+    connectors = ET.SubElement(extension, "connectors")
+    nodes_by_id = {str(node.get("id")): node for node in contenido.get("nodes") or []}
+    for index, edge in enumerate(contenido.get("edges") or [], start=1):
+        source_id = str(edge.get("source"))
+        target_id = str(edge.get("target"))
+        if source_id not in nodes_by_id or target_id not in nodes_by_id:
+            continue
+        relation_id = exported_relation_id(edge)
+        if not relation_id:
+            continue
+        relation_type = get_relation_type(edge)
+        data = edge.get("data") or {}
+        uses_multiplicity = relation_type in {"association", "associationClass", "composition", "aggregation"}
+        source_aggregation = "composite" if relation_type == "composition" else "shared" if relation_type == "aggregation" else "none"
+        connector = ET.SubElement(connectors, "connector", {xmi_attr("idref"): relation_id})
+        add_ea_connector_end(
+            connector,
+            "source",
+            nodes_by_id[source_id],
+            data.get("sourceCardinality", "1") if uses_multiplicity else None,
+            source_aggregation,
+            data.get("sourceRole"),
+        )
+        add_ea_connector_end(
+            connector,
+            "target",
+            nodes_by_id[target_id],
+            data.get("targetCardinality", "0..*") if uses_multiplicity else None,
+            "none",
+            data.get("targetRole"),
+        )
+        ET.SubElement(connector, "model", {"ea_localid": str(2000 + index)})
+        property_attributes = {
+            "ea_type": relation_extension_name(edge),
+            "direction": "Source -> Destination" if relation_type in {"generalization", "realization", "templateBinding"} else "Unspecified",
+        }
+        if relation_type == "associationClass":
+            property_attributes["ea_type"] = "Association"
+            property_attributes["subtype"] = "Class"
+        ET.SubElement(connector, "properties", property_attributes)
+        ET.SubElement(connector, "modifiers", {"isRoot": "false", "isLeaf": "false"})
+        ET.SubElement(connector, "parameterSubstitutions")
+        ET.SubElement(connector, "documentation")
+        ET.SubElement(connector, "appearance", {"linemode": "3", "linecolor": "-1", "linewidth": "0", "seqno": "0", "headStyle": "0", "lineStyle": "0"})
+        if uses_multiplicity:
+            ET.SubElement(
+                connector,
+                "labels",
+                {
+                    "lb": str(data.get("sourceCardinality", "1")),
+                    "rb": str(data.get("targetCardinality", "0..*")),
+                },
+            )
+        else:
+            ET.SubElement(connector, "labels")
+        extended_attributes = {"virtualInheritance": "0"}
+        if relation_type == "associationClass" and data.get("associationClassId"):
+            extended_attributes["associationclass"] = safe_id(str(data["associationClassId"]))
+        ET.SubElement(connector, "extendedProperties", extended_attributes)
+        ET.SubElement(connector, "style")
+        ET.SubElement(connector, "xrefs")
+        tags = ET.SubElement(connector, "tags")
+        if relation_type == "templateBinding":
+            for name, value in (data.get("templateBindings") or {}).items():
+                add_ea_tag(tags, f"templateBinding.{name}", value, relation_id)
+    return connectors
+
+
+def add_ea_primitive_types(extension: ET.Element, type_names: list[str]):
+    primitive_types = ET.SubElement(extension, "primitivetypes")
+    primitive_package = ET.SubElement(
+        primitive_types,
+        "packagedElement",
+        {
+            xmi_attr("type"): "uml:Package",
+            xmi_attr("id"): "EAPrimitiveTypesPackage",
+            "name": "EA_PrimitiveTypes_Package",
+            "visibility": "public",
+        },
+    )
+    language_package = ET.SubElement(
+        primitive_package,
+        "packagedElement",
+        {
+            xmi_attr("type"): "uml:Package",
+            xmi_attr("id"): "EAJavaTypesPackage",
+            "name": "EA_Java_Types_Package",
+            "visibility": "public",
+        },
+    )
+    for type_name in type_names:
+        ET.SubElement(
+            language_package,
+            "packagedElement",
+            {
+                xmi_attr("type"): "uml:PrimitiveType",
+                xmi_attr("id"): primitive_type_id(type_name),
+                "name": type_name,
+                "visibility": "public",
+            },
+        )
+
+
 def add_enterprise_architect_diagram(
-    root: ET.Element,
+    extension: ET.Element,
     contenido: dict[str, Any],
     nombre: str,
     class_elements: dict[str, ET.Element],
     relation_ids: set[str],
     package_id: str,
 ):
-    extension = ET.SubElement(
-        root,
-        xmi_attr("Extension"),
-        {
-            "extender": "Enterprise Architect",
-            "extenderID": "6.5",
-        },
-    )
     diagrams = ET.SubElement(extension, "diagrams")
     diagram_id = ea_guid("EAID", nombre or "DrawSchemaDiagram")
     diagram = ET.SubElement(
@@ -453,7 +989,7 @@ def add_enterprise_architect_diagram(
                 "subject": safe_id(node_id),
                 "geometry": geometry_value(40 + x - min_x, 40 + y - min_y, width, height),
                 "seqno": str(index),
-                "style": f"DUID={ea_guid('DUID', node_id)};",
+                "style": f"DUID={diagram_object_id(node_id)};",
             },
         )
 
@@ -474,7 +1010,7 @@ def add_enterprise_architect_diagram(
                 "subject": relation_id,
                 "geometry": "SX=0;SY=0;EX=0;EY=0;EDGE=3;$LLB=;LLT=;LMT=;LMB=;LRT=;LRB=;IRHS=;ILHS=;Path=;",
                 "style": (
-                    f"Mode=3;SOID={safe_id(source)};EOID={safe_id(target)};"
+                    f"Mode=3;SOID={diagram_object_id(source)};EOID={diagram_object_id(target)};"
                     "Color=-1;LWidth=0;Hidden=0;"
                 ),
             },
@@ -535,6 +1071,12 @@ def diagram_content_to_xmi(
         if get_relation_type(edge) == "associationClass"
         and (edge.get("data") or {}).get("associationClassId")
     }
+    type_names = collect_used_types(contenido)
+    type_ids = (
+        {type_name.casefold(): primitive_type_id(type_name) for type_name in type_names}
+        if profile == ENTERPRISE_ARCHITECT_PROFILE
+        else None
+    )
 
     for node in contenido.get("nodes", []):
         node_id = str(node.get("id"))
@@ -542,6 +1084,7 @@ def diagram_content_to_xmi(
             package,
             node,
             force_association_class=node_id in association_class_ids,
+            type_ids=type_ids,
         )
 
     relation_ids: set[str] = set()
@@ -562,8 +1105,24 @@ def diagram_content_to_xmi(
             relation_ids.add(relation_id)
 
     if profile == ENTERPRISE_ARCHITECT_PROFILE:
+        extension = ET.SubElement(
+            root,
+            xmi_attr("Extension"),
+            {
+                "extender": "Enterprise Architect",
+                "extenderID": "6.5",
+            },
+        )
+        add_ea_elements(
+            extension=extension,
+            contenido=contenido,
+            package_id=package_id,
+            association_class_ids=association_class_ids,
+        )
+        add_ea_connectors(extension, contenido)
+        add_ea_primitive_types(extension, type_names)
         add_enterprise_architect_diagram(
-            root=root,
+            extension=extension,
             contenido=contenido,
             nombre=nombre,
             class_elements=class_elements,

@@ -197,9 +197,13 @@ class XmiExporterTest(unittest.TestCase):
         )
         ends = [item for item in association if item.tag == "ownedEnd"]
 
-        self.assertEqual(ends[0].get("type"), "order")
+        source_type = next(item for item in ends[0] if local_name(item.tag) == "type")
+        self.assertEqual(
+            next(value for key, value in source_type.attrib.items() if key.endswith("}idref")),
+            "order",
+        )
         self.assertEqual(ends[0].get("aggregation"), "composite")
-        self.assertIsNone(ends[1].get("aggregation"))
+        self.assertEqual(ends[1].get("aggregation"), "none")
         self.assertEqual(ends[0].find("lowerValue").get("value"), "1")
         self.assertEqual(ends[1].find("lowerValue").get("value"), "1")
         self.assertEqual(ends[1].find("upperValue").get("value"), "*")
@@ -293,6 +297,90 @@ class XmiExporterTest(unittest.TestCase):
         self.assertEqual((dependency.get("client"), dependency.get("supplier")), ("service", "repository"))
         self.assertEqual(dependency.get("name"), "templateBinding")
         self.assertEqual(link_subjects, {"realization_1", "binding_1"})
+
+    def test_enterprise_architect_exports_types_features_and_connectors(self):
+        content = {
+            "nodes": [
+                {
+                    "id": "customer",
+                    "data": {
+                        "name": "Cliente",
+                        "attributes": [
+                            {
+                                "name": "id",
+                                "type": "BIGINT",
+                                "primaryKey": True,
+                                "nullable": False,
+                            },
+                            {
+                                "name": "email",
+                                "type": "VARCHAR(150)",
+                                "unique": True,
+                                "nullable": False,
+                            },
+                        ],
+                        "methods": [
+                            {
+                                "name": "buscar",
+                                "returnType": "Cliente",
+                                "parameters": [{"name": "codigo", "type": "BIGINT"}],
+                            }
+                        ],
+                    },
+                },
+                {"id": "order", "data": {"name": "Pedido"}},
+            ],
+            "edges": [
+                {
+                    "id": "customer-orders",
+                    "source": "customer",
+                    "target": "order",
+                    "data": {
+                        "relationType": "association",
+                        "sourceCardinality": "1",
+                        "targetCardinality": "0..*",
+                    },
+                }
+            ],
+        }
+
+        root = ET.fromstring(
+            diagram_content_to_xmi(content, "Ventas", ENTERPRISE_ARCHITECT_PROFILE)
+        )
+        primitive_names = {
+            item.get("name")
+            for item in root.iter()
+            if xmi_type(item) == "uml:PrimitiveType"
+        }
+        extension_attributes = [
+            item for item in root.iter() if local_name(item.tag) == "attribute"
+        ]
+        connectors = [item for item in root.iter() if local_name(item.tag) == "connector"]
+        operations = [item for item in root.iter() if local_name(item.tag) == "operation"]
+
+        self.assertEqual(primitive_names, {"BIGINT", "VARCHAR(150)", "Cliente"})
+        self.assertEqual(
+            [next(child for child in item if local_name(child.tag) == "properties").get("type") for item in extension_attributes],
+            ["BIGINT", "VARCHAR(150)"],
+        )
+        self.assertTrue(
+            all(
+                next(
+                    value
+                    for key, value in item.attrib.items()
+                    if key == "idref" or key.endswith("}idref")
+                ).startswith("EAID_")
+                for item in extension_attributes
+            )
+        )
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(len(connectors), 1)
+        source = next(item for item in connectors[0] if local_name(item.tag) == "source")
+        target = next(item for item in connectors[0] if local_name(item.tag) == "target")
+        source_type = next(item for item in source if local_name(item.tag) == "type")
+        target_type = next(item for item in target if local_name(item.tag) == "type")
+        self.assertEqual(source_type.get("multiplicity"), "1")
+        self.assertEqual(target_type.get("multiplicity"), "0..*")
 
 
 if __name__ == "__main__":
