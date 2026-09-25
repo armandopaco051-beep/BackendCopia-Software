@@ -83,11 +83,11 @@ class XmiExporterTest(unittest.TestCase):
         self.assertEqual([item.get("subject") for item in visual_elements], ["cliente", "pedido"])
         self.assertEqual(
             visual_elements[0].get("geometry"),
-            "Left=40;Top=40;Right=340;Bottom=260;",
+            "Left=40;Top=40;Right=140;Bottom=92;",
         )
         self.assertEqual(
             visual_elements[1].get("geometry"),
-            "Left=440;Top=90;Right=685;Bottom=270;",
+            "Left=440;Top=90;Right=540;Bottom=142;",
         )
         self.assertEqual(len(visual_links), 1)
         self.assertEqual(visual_links[0].get("subject"), "rel_cliente_pedido")

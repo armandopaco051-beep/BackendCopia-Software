@@ -11,10 +11,12 @@ EA_XMI_NS = "http://schema.omg.org/spec/XMI/2.1"
 EA_UML_NS = "http://schema.omg.org/spec/UML/2.1"
 STANDARD_PROFILE = "standard"
 ENTERPRISE_ARCHITECT_PROFILE = "enterprise_architect"
-DEFAULT_NODE_WIDTH = 245
-DEFAULT_NODE_HEIGHT = 180
-EA_LAYOUT_MAX_WIDTH = 960
-EA_LAYOUT_MAX_HEIGHT = 720
+DEFAULT_NODE_WIDTH = 100
+DEFAULT_NODE_HEIGHT = 52
+MAX_NODE_WIDTH = 220
+MAX_NODE_HEIGHT = 260
+EA_LAYOUT_MAX_WIDTH = 720
+EA_LAYOUT_MAX_HEIGHT = 520
 EA_LAYOUT_MARGIN = 40
 
 ET.register_namespace("xmi", XMI_NS)
@@ -54,20 +56,42 @@ def numeric_value(value: Any, default: float):
 
 def get_node_size(node: dict[str, Any]):
     data = node.get("data") or {}
-    style = node.get("style") or {}
-    measured = node.get("measured") or {}
-    attribute_count = max(len(data.get("attributes") or []), 1)
-    method_count = max(len(data.get("methods") or []), 1)
-    content_height = 46 + 40 + attribute_count * 22 + method_count * 22 + 12
-    width = numeric_value(
-        style.get("width", node.get("width", measured.get("width"))),
-        DEFAULT_NODE_WIDTH,
+    attributes = data.get("attributes") or []
+    methods = data.get("methods") or []
+
+    labels = [str(get_node_name(node))]
+    labels.extend(
+        f"{attribute.get('name') or 'atributo'}: {attribute_type(attribute)}"
+        for attribute in attributes
     )
-    height = numeric_value(
-        style.get("height", node.get("height", measured.get("height"))),
-        max(DEFAULT_NODE_HEIGHT, content_height),
+    for index, method in enumerate(methods):
+        parameters = ", ".join(
+            f"{parameter['name']}: {parameter['type']}"
+            for parameter in (
+                normalize_parameter(item, param_index)
+                for param_index, item in enumerate(method.get("parameters") or [])
+            )
+        )
+        labels.append(
+            f"{method.get('name') or f'metodo{index + 1}'}({parameters}): {method_return_type(method)}"
+        )
+
+    longest_label = max((len(label) for label in labels), default=12)
+    width = min(MAX_NODE_WIDTH, max(DEFAULT_NODE_WIDTH, 22 + longest_label * 6.4))
+
+    stereotype_rows = sum(
+        1
+        for attribute in attributes
+        if boolean_value(attribute.get("primaryKey", attribute.get("isPrimaryKey")))
+        or boolean_value(attribute.get("foreignKey", attribute.get("isForeignKey")))
     )
-    return max(width, DEFAULT_NODE_WIDTH), max(height, DEFAULT_NODE_HEIGHT, content_height)
+    height = 28
+    if attributes:
+        height += 4 + (len(attributes) + stereotype_rows) * 14
+    if methods:
+        height += 4 + len(methods) * 14
+    height = min(MAX_NODE_HEIGHT, max(DEFAULT_NODE_HEIGHT, height))
+    return width, height
 
 
 def get_node_position(node: dict[str, Any]):
