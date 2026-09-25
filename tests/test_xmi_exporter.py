@@ -10,7 +10,10 @@ from app.services.xmi_importer import parse_xmi_to_diagram_content
 
 
 def xmi_type(element: ET.Element):
-    return element.get(f"{{{XMI_NS}}}type")
+    for key, value in element.attrib.items():
+        if key == "type" or key.endswith("}type"):
+            return value
+    return None
 
 
 def local_name(tag: str):
@@ -60,6 +63,7 @@ class XmiExporterTest(unittest.TestCase):
         root = ET.fromstring(
             diagram_content_to_xmi(content, "Ventas", ENTERPRISE_ARCHITECT_PROFILE)
         )
+        self.assertEqual(root.tag, "{http://schema.omg.org/spec/XMI/2.1}XMI")
         diagrams = [item for item in root.iter() if local_name(item.tag) == "diagram"]
         self.assertEqual(len(diagrams), 1)
 
@@ -67,8 +71,14 @@ class XmiExporterTest(unittest.TestCase):
             item
             for item in diagrams[0].iter()
             if local_name(item.tag) == "element" and item.get("subject")
+            and "Left=" in (item.get("geometry") or "")
         ]
-        visual_links = [item for item in diagrams[0].iter() if local_name(item.tag) == "link"]
+        visual_links = [
+            item
+            for item in diagrams[0].iter()
+            if local_name(item.tag) == "element" and "EDGE=" in (item.get("geometry") or "")
+        ]
+        diagram_model = next(item for item in diagrams[0] if local_name(item.tag) == "model")
 
         self.assertEqual([item.get("subject") for item in visual_elements], ["cliente", "pedido"])
         self.assertEqual(
@@ -81,8 +91,8 @@ class XmiExporterTest(unittest.TestCase):
         )
         self.assertEqual(len(visual_links), 1)
         self.assertEqual(visual_links[0].get("subject"), "rel_cliente_pedido")
-        self.assertEqual(visual_links[0].get("source"), "cliente")
-        self.assertEqual(visual_links[0].get("target"), "pedido")
+        self.assertTrue(diagram_model.get("package", "").startswith("EAPK_"))
+        self.assertEqual(diagram_model.get("owner"), diagram_model.get("package"))
 
     def test_enterprise_architect_export_can_be_imported_without_duplicates(self):
         content = {
@@ -276,7 +286,7 @@ class XmiExporterTest(unittest.TestCase):
         link_subjects = {
             item.get("subject")
             for item in diagram.iter()
-            if local_name(item.tag) == "link"
+            if local_name(item.tag) == "element" and "EDGE=" in (item.get("geometry") or "")
         }
 
         self.assertEqual((realization.get("client"), realization.get("supplier")), ("service", "contract"))

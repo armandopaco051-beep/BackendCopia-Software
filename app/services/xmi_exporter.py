@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import uuid
 from typing import Any
 
 
 XMI_NS = "http://www.omg.org/spec/XMI/20131001"
 UML_NS = "http://www.omg.org/spec/UML/20131001"
+EA_XMI_NS = "http://schema.omg.org/spec/XMI/2.1"
+EA_UML_NS = "http://schema.omg.org/spec/UML/2.1"
 STANDARD_PROFILE = "standard"
 ENTERPRISE_ARCHITECT_PROFILE = "enterprise_architect"
 DEFAULT_NODE_WIDTH = 245
@@ -80,6 +83,11 @@ def geometry_value(left: float, top: float, width: float, height: float):
         f"Right={integer_coordinate(left + width)};"
         f"Bottom={integer_coordinate(top + height)};"
     )
+
+
+def ea_guid(prefix: str, value: str):
+    generated = uuid.uuid5(uuid.NAMESPACE_URL, f"drawschema:{prefix}:{value}")
+    return f"{prefix}_{str(generated).replace('-', '_').upper()}"
 
 
 def normalize_parameter(parameter: Any, index: int):
@@ -364,6 +372,7 @@ def add_enterprise_architect_diagram(
     nombre: str,
     class_elements: dict[str, ET.Element],
     relation_ids: set[str],
+    package_id: str,
 ):
     extension = ET.SubElement(
         root,
@@ -374,22 +383,21 @@ def add_enterprise_architect_diagram(
         },
     )
     diagrams = ET.SubElement(extension, "diagrams")
-    diagram_id = f"EAID_{safe_id(nombre or 'DrawSchemaDiagram')}"
+    diagram_id = ea_guid("EAID", nombre or "DrawSchemaDiagram")
     diagram = ET.SubElement(
         diagrams,
         "diagram",
         {
             xmi_attr("id"): diagram_id,
-            "name": str(nombre or "DrawSchema Diagram"),
-            "owner": "DrawSchemaModel",
         },
     )
     ET.SubElement(
         diagram,
         "model",
         {
-            "package": "DrawSchemaModel",
+            "package": package_id,
             "localID": "1",
+            "owner": package_id,
         },
     )
     ET.SubElement(
@@ -400,6 +408,29 @@ def add_enterprise_architect_diagram(
             "type": "Logical",
         },
     )
+    ET.SubElement(
+        diagram,
+        "project",
+        {
+            "author": "DrawSchema",
+            "version": "1.0",
+        },
+    )
+    ET.SubElement(
+        diagram,
+        "style1",
+        {
+            "value": (
+                "ShowPrivate=1;ShowProtected=1;ShowPublic=1;HideRelationships=0;"
+                "Locked=0;Border=1;Zoom=100;HideAtts=0;HideOps=0;"
+                "ConnectorNotation=UML 2.1;ShowNotes=0;"
+            ),
+        },
+    )
+    ET.SubElement(diagram, "style2", {"value": "ExcludeRTF=0;DocAll=0;HideQuals=0;"})
+    ET.SubElement(diagram, "swimlanes", {"value": "locked=false;orientation=0;width=0;"})
+    ET.SubElement(diagram, "matrixitems", {"value": "locked=false;matrixactive=false;"})
+    ET.SubElement(diagram, "extendedProperties")
     diagram_elements = ET.SubElement(diagram, "elements")
 
     visible_nodes = [
@@ -422,10 +453,10 @@ def add_enterprise_architect_diagram(
                 "subject": safe_id(node_id),
                 "geometry": geometry_value(40 + x - min_x, 40 + y - min_y, width, height),
                 "seqno": str(index),
+                "style": f"DUID={ea_guid('DUID', node_id)};",
             },
         )
 
-    diagram_links = ET.SubElement(diagram, "links")
     for edge in contenido.get("edges", []):
         relation_id = exported_relation_id(edge)
         if relation_id is None or relation_id not in relation_ids:
@@ -437,15 +468,15 @@ def add_enterprise_architect_diagram(
             continue
 
         ET.SubElement(
-            diagram_links,
-            "link",
+            diagram_elements,
+            "element",
             {
                 "subject": relation_id,
-                "connector": relation_id,
-                "source": safe_id(source),
-                "target": safe_id(target),
-                "geometry": "SX=0;SY=0;EX=0;EY=0;",
-                "style": f"Mode=3;SOID={safe_id(source)};EOID={safe_id(target)};",
+                "geometry": "SX=0;SY=0;EX=0;EY=0;EDGE=3;$LLB=;LLT=;LMT=;LMB=;LRT=;LRB=;IRHS=;ILHS=;Path=;",
+                "style": (
+                    f"Mode=3;SOID={safe_id(source)};EOID={safe_id(target)};"
+                    "Color=-1;LWidth=0;Hidden=0;"
+                ),
             },
         )
 
@@ -465,12 +496,35 @@ def diagram_content_to_xmi(
         },
     )
 
+    if profile == ENTERPRISE_ARCHITECT_PROFILE:
+        ET.SubElement(
+            root,
+            xmi_attr("Documentation"),
+            {
+                "exporter": "Enterprise Architect",
+                "exporterVersion": "6.5",
+            },
+        )
+
     model = ET.SubElement(
         root,
         f"{{{UML_NS}}}Model",
         {
+            xmi_attr("type"): "uml:Model",
             xmi_attr("id"): "DrawSchemaModel",
+            "name": "EA_Model" if profile == ENTERPRISE_ARCHITECT_PROFILE else str(nombre),
+            "visibility": "public",
+        },
+    )
+    package_id = ea_guid("EAPK", nombre or "DrawSchemaPackage")
+    package = ET.SubElement(
+        model,
+        "packagedElement",
+        {
+            xmi_attr("type"): "uml:Package",
+            xmi_attr("id"): package_id,
             "name": str(nombre),
+            "visibility": "public",
         },
     )
 
@@ -485,7 +539,7 @@ def diagram_content_to_xmi(
     for node in contenido.get("nodes", []):
         node_id = str(node.get("id"))
         class_elements[node_id] = create_class_element(
-            model,
+            package,
             node,
             force_association_class=node_id in association_class_ids,
         )
@@ -497,11 +551,11 @@ def diagram_content_to_xmi(
         if relation_type == "generalization":
             add_generalization(class_elements, edge)
         elif relation_type in {"association", "composition", "aggregation"}:
-            add_association(model, edge)
+            add_association(package, edge)
         elif relation_type == "associationClass":
             add_association_class(class_elements, edge)
         elif relation_type in {"realization", "templateBinding"}:
-            add_directed_relation(model, edge)
+            add_directed_relation(package, edge)
 
         relation_id = exported_relation_id(edge)
         if relation_id:
@@ -514,7 +568,12 @@ def diagram_content_to_xmi(
             nombre=nombre,
             class_elements=class_elements,
             relation_ids=relation_ids,
+            package_id=package_id,
         )
 
     ET.indent(root, space="  ")
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    output = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    if profile == ENTERPRISE_ARCHITECT_PROFILE:
+        output = output.replace(XMI_NS.encode(), EA_XMI_NS.encode())
+        output = output.replace(UML_NS.encode(), EA_UML_NS.encode())
+    return output
