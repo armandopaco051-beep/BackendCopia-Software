@@ -1,9 +1,10 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import SessionLocal
+from starlette.concurrency import run_in_threadpool
 from app.models.usuario import Usuario
 from app.security.jwt import verificar_token
 from app.services.diagrama import obtener_diagrama
@@ -84,31 +85,33 @@ def build_realtime_event(
     }
 
 
+def load_socket_identity(diagrama_id: int, token: str | None):
+    # La sesión termina ANTES de aceptar el WebSocket; no se retiene una
+    # transacción PostgreSQL durante toda la conversación en tiempo real.
+    with SessionLocal() as db:
+        usuario = get_user_from_token(db, token)
+        if usuario is None:
+            return None
+        diagrama = obtener_diagrama(db, diagrama_id)
+        if diagrama is None:
+            return None
+        if not usuario_tiene_permiso(db, diagrama.id_proyecto, usuario.codigo, "ver_diagrama"):
+            return None
+        can_edit = usuario_tiene_permiso(db, diagrama.id_proyecto, usuario.codigo, "editar_diagrama")
+        return user_payload(usuario, can_edit)
+
+
 @router.websocket("/ws/diagramas/{diagrama_id}")
 async def diagram_realtime_socket(
     websocket: WebSocket,
     diagrama_id: int,
     token: str | None = Query(default=None),
-    db: Session = Depends(get_db),
 ):
-    usuario = get_user_from_token(db, token)
-
-    if usuario is None:
+    current_user = await run_in_threadpool(load_socket_identity, diagrama_id, token)
+    if current_user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-
-    diagrama = obtener_diagrama(db, diagrama_id)
-
-    if diagrama is None:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    if not usuario_tiene_permiso(db, diagrama.id_proyecto, usuario.codigo, "ver_diagrama"):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    can_edit = usuario_tiene_permiso(db, diagrama.id_proyecto, usuario.codigo, "editar_diagrama")
-    current_user = user_payload(usuario, can_edit)
+    can_edit = current_user["can_edit"]
 
     await realtime_manager.connect(diagrama_id, websocket, current_user)
 

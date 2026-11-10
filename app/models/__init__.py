@@ -4,4 +4,5 @@ from app.models.proyecto_usuario import ProyectoUsuario
 from app.models.diagrama import Diagrama
 from app.models.version_historial import VersionHistorial
 from app.models.comentario import Comentario
+from app.models.chat import Conversacion, Mensaje
 

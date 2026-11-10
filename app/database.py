@@ -2,7 +2,11 @@ from sqlalchemy import create_engine, text
 from  sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import settings
 
-engine = create_engine(settings.DATABASE_URL) #se crea una conxion con postgreSQL
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,  # Descarta conexiones cerradas antes de reutilizarlas.
+    pool_recycle=300,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) # se crea sseiones para consultar con la base de datos
 Base = declarative_base() #base para crear modelos/tablas 
 

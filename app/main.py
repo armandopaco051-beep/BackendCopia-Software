@@ -2,8 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models
+from app.models.chat import ai_reply_index
 from app.database import Base, engine, ensure_version_historial_columns, ensure_proyecto_invitation_columns
 from app.routers.auth import router as auth
+from app.routers.chat import router as chat
 from app.routers.comentario import router as comentario
 from app.routers.diagrama import router as diagrama
 from app.routers.import_export import router as import_export
@@ -12,6 +14,7 @@ from app.routers.realtime import router as realtime
 from app.routers.usuario import router as usuario
 
 Base.metadata.create_all(bind=engine)  # Crear las tablas en la base de datos
+ai_reply_index.create(bind=engine, checkfirst=True)
 ensure_version_historial_columns()
 ensure_proyecto_invitation_columns()
 
@@ -34,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(auth)
+app.include_router(chat)
 app.include_router(usuario)
 app.include_router(proyecto)
 app.include_router(diagrama)

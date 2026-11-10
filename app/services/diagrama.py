@@ -21,6 +21,7 @@ from app.schemas.diagrama import (
     RelacionUpdate,
 )
 from app.services.uml_validator import validate_uml_relations
+from app.services.relationship_keys import synchronize_relationship_keys
 
 
 def contenido_inicial():
@@ -116,155 +117,8 @@ def guardar_version_automatica(
 
 
 def sincronizar_clases_asociacion(contenido: dict):
-    if not isinstance(contenido, dict):
-        return
-
-    nodes = contenido.get("nodes", [])
-    edges = contenido.get("edges", [])
-
-    if not isinstance(nodes, list) or not isinstance(edges, list):
-        return
-
-    node_by_id = {str(node.get("id", "")).strip(): node for node in nodes if isinstance(node, dict) and "id" in node}
-
-    for edge in edges:
-        if not isinstance(edge, dict):
-            continue
-
-        data = edge.get("data") or {}
-        relation_type = data.get("relationType") or edge.get("type")
-        if relation_type != "associationClass":
-            continue
-
-        source_id = str(edge.get("source") or data.get("sourceClassId") or "").strip()
-        target_id = str(edge.get("target") or data.get("targetClassId") or "").strip()
-        assoc_id = str(data.get("associationClassId") or "").strip()
-
-        if not source_id or not target_id or not assoc_id:
-            continue
-
-        source_node = node_by_id.get(source_id)
-        target_node = node_by_id.get(target_id)
-        assoc_node = node_by_id.get(assoc_id)
-
-        if not source_node or not target_node or not assoc_node:
-            continue
-
-        source_data = source_node.get("data") or {}
-        target_data = target_node.get("data") or {}
-        assoc_data = assoc_node.setdefault("data", {})
-
-        source_name = str(source_data.get("name") or "Origen").strip()
-        target_name = str(target_data.get("name") or "Destino").strip()
-
-        # Extraer atributos PK de la clase origen
-        source_pks = []
-        for attr in source_data.get("attributes", []):
-            if not isinstance(attr, dict):
-                continue
-            is_pk = bool(
-                attr.get("primaryKey")
-                or attr.get("isPrimaryKey")
-                or attr.get("isPk")
-                or attr.get("es_pk")
-                or attr.get("pk")
-                or (str(attr.get("name", "")).strip().lower() == "id" and attr.get("primaryKey") is not False)
-            )
-            if is_pk:
-                source_pks.append(attr)
-
-        if not source_pks:
-            source_pks = [{
-                "name": f"id_{source_name.lower().replace(' ', '_')}",
-                "type": "BIGINT",
-                "primaryKey": True,
-                "isPrimaryKey": True,
-                "foreignKey": True,
-                "isForeignKey": True,
-                "nullable": False,
-            }]
-
-        # Extraer atributos PK de la clase destino
-        target_pks = []
-        for attr in target_data.get("attributes", []):
-            if not isinstance(attr, dict):
-                continue
-            is_pk = bool(
-                attr.get("primaryKey")
-                or attr.get("isPrimaryKey")
-                or attr.get("isPk")
-                or attr.get("es_pk")
-                or attr.get("pk")
-                or (str(attr.get("name", "")).strip().lower() == "id" and attr.get("primaryKey") is not False)
-            )
-            if is_pk:
-                target_pks.append(attr)
-
-        if not target_pks:
-            target_pks = [{
-                "name": f"id_{target_name.lower().replace(' ', '_')}",
-                "type": "BIGINT",
-                "primaryKey": True,
-                "isPrimaryKey": True,
-                "foreignKey": True,
-                "isForeignKey": True,
-                "nullable": False,
-            }]
-
-        # Construir claves compuestas (PK y FK simultaneamente) en la clase de asociacion
-        composite_pk_fk_attrs = []
-
-        for pk in source_pks:
-            orig_name = str(pk.get("name") or "id").strip()
-            lower = orig_name.lower()
-            if lower in {"id", "codigo", "pk"}:
-                attr_name = f"id_{source_name.lower().replace(' ', '_')}"
-            else:
-                attr_name = orig_name
-            attr_type = str(pk.get("type") or "BIGINT").strip()
-
-            composite_pk_fk_attrs.append({
-                "name": attr_name,
-                "type": attr_type,
-                "primaryKey": True,
-                "isPrimaryKey": True,
-                "foreignKey": True,
-                "isForeignKey": True,
-                "nullable": False,
-            })
-
-        for pk in target_pks:
-            orig_name = str(pk.get("name") or "id").strip()
-            lower = orig_name.lower()
-            if lower in {"id", "codigo", "pk"}:
-                attr_name = f"id_{target_name.lower().replace(' ', '_')}"
-            else:
-                attr_name = orig_name
-
-            if any(a["name"].lower() == attr_name.lower() for a in composite_pk_fk_attrs):
-                attr_name = f"{attr_name}_{target_name.lower().replace(' ', '_')}"
-
-            attr_type = str(pk.get("type") or "BIGINT").strip()
-
-            composite_pk_fk_attrs.append({
-                "name": attr_name,
-                "type": attr_type,
-                "primaryKey": True,
-                "isPrimaryKey": True,
-                "foreignKey": True,
-                "isForeignKey": True,
-                "nullable": False,
-            })
-
-        # Preservar atributos propios de la clase de asociacion que no colisionen
-        existing_attrs = assoc_data.get("attributes", [])
-        combined_names = {a["name"].lower() for a in composite_pk_fk_attrs}
-        extra_attrs = [
-            attr for attr in existing_attrs
-            if isinstance(attr, dict) and str(attr.get("name", "")).strip().lower() not in combined_names
-        ]
-
-        assoc_data["attributes"] = composite_pk_fk_attrs + extra_attrs
+    # Nombre conservado para compatibilidad con el flujo existente.
+    synchronize_relationship_keys(contenido)
 
 
 def normalizar_contenido(contenido: dict | None):
@@ -285,6 +139,7 @@ def crear_diagrama(db: Session, datos: DiagramaCreate):
         return None, "PROYECTO_NO_EXISTE"
 
     contenido = normalizar_contenido(datos.contenido)
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -385,6 +240,7 @@ def actualizar_diagrama(db: Session, diagrama_id: int, datos: DiagramaUpdate):
 
     if datos.contenido is not None:
         contenido = normalizar_contenido(datos.contenido)
+        synchronize_relationship_keys(contenido)
         error = validate_uml_relations(contenido)
 
         if error:
@@ -459,6 +315,7 @@ def agregar_clase(db: Session, diagrama_id: int, datos: ClaseCreate):
     }
 
     contenido["nodes"].append(nueva_clase)
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -498,6 +355,7 @@ def mover_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseMove):
         "y": datos.y,
     }
 
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -549,6 +407,7 @@ def editar_clase(db: Session, diagrama_id: int, clase_id: str, datos: ClaseUpdat
     if datos.templateParameters is not None:
         data["templateParameters"] = datos.templateParameters
 
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -594,6 +453,7 @@ def eliminar_clase(db: Session, diagrama_id: int, clase_id: str, autor_codigo: s
         )
     ]
 
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -656,6 +516,7 @@ def agregar_relacion(db: Session, diagrama_id: int, datos: RelacionCreate):
 
     contenido["edges"].append(nueva_relacion)
 
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -705,11 +566,12 @@ def editar_relacion(db: Session, diagrama_id: int, relacion_id: str, datos: Rela
         relacion["data"] = datos.data
 
     data = relacion.setdefault("data", {})
-    data.setdefault("sourceClassId", relacion.get("source"))
-    data.setdefault("targetClassId", relacion.get("target"))
+    data["sourceClassId"] = relacion.get("source")
+    data["targetClassId"] = relacion.get("target")
 
     contenido["edges"][index] = relacion
 
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
@@ -746,6 +608,7 @@ def eliminar_relacion(db: Session, diagrama_id: int, relacion_id: str, autor_cod
 
     contenido["edges"].pop(index)
 
+    synchronize_relationship_keys(contenido)
     error = validate_uml_relations(contenido)
 
     if error:
