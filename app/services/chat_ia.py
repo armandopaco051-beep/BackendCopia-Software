@@ -35,6 +35,7 @@ def solicitar_ia(path: str, body: bytes, token: str, content_type: str = "applic
             exc.close()
         if isinstance(detail, dict) and detail.get("code") in {
             "LOCAL_OUTPUT_TRUNCATED", "LOCAL_UNAVAILABLE", "LOCAL_TIMEOUT", "LOCAL_HTTP_ERROR", "LOCAL_INVALID_RESPONSE",
+            "LOCAL_QUEUE_FULL",
         } and isinstance(detail.get("message"), str):
             raise HTTPException(502, "Tu consulta está guardada. " + detail["message"][:500]) from exc
         raise HTTPException(502, "Tu consulta está guardada, pero el servicio IA no pudo responder. Puedes reintentar.") from exc
