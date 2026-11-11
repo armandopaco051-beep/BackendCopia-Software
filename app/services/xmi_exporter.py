@@ -276,25 +276,28 @@ def create_class_element(
                 "isDerivedUnion": "false",
             },
         )
-        nullable = boolean_value(attribute.get("nullable"), type_ids is None)
-        ET.SubElement(
-            owned_attribute,
-            "lowerValue",
-            {
-                xmi_attr("type"): "uml:LiteralInteger",
-                xmi_attr("id"): f"{attr_id}_lower",
-                "value": "0" if nullable else "1",
-            },
-        )
-        ET.SubElement(
-            owned_attribute,
-            "upperValue",
-            {
-                xmi_attr("type"): "uml:LiteralInteger",
-                xmi_attr("id"): f"{attr_id}_upper",
-                "value": "1",
-            },
-        )
+        # EA displays explicit UML attribute bounds next to the type.
+        # Its export profile preserves nullability in the extension tag.
+        if type_ids is None:
+            nullable = boolean_value(attribute.get("nullable"), True)
+            ET.SubElement(
+                owned_attribute,
+                "lowerValue",
+                {
+                    xmi_attr("type"): "uml:LiteralInteger",
+                    xmi_attr("id"): f"{attr_id}_lower",
+                    "value": "0" if nullable else "1",
+                },
+            )
+            ET.SubElement(
+                owned_attribute,
+                "upperValue",
+                {
+                    xmi_attr("type"): "uml:LiteralInteger",
+                    xmi_attr("id"): f"{attr_id}_upper",
+                    "value": "1",
+                },
+            )
         add_type_reference(owned_attribute, attribute_type(attribute), type_ids)
         default_value = attribute.get("defaultValue", attribute.get("default"))
         if default_value not in {None, ""}:
@@ -635,7 +638,6 @@ def add_ea_attribute_metadata(
     if foreign_key:
         stereotypes.append("FK")
     ET.SubElement(metadata, "stereotype", {"stereotype": ",".join(stereotypes)}) if stereotypes else ET.SubElement(metadata, "stereotype")
-    ET.SubElement(metadata, "bounds", {"lower": "0" if nullable else "1", "upper": "1"})
     ET.SubElement(metadata, "options")
     ET.SubElement(metadata, "style")
     ET.SubElement(metadata, "styleex", {"value": "volatile=0;"})

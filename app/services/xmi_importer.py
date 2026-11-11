@@ -106,7 +106,24 @@ def parse_cardinality(element: ET.Element) -> str:
     return cardinality if cardinality in {"1", "0..1", "0..*", "1..*"} else "1"
 
 
-def parse_attributes(class_element: ET.Element, primitive_types: dict[str, str]) -> list[dict[str, Any]]:
+def collect_attribute_nullability(root: ET.Element) -> dict[str, bool]:
+    result = {}
+    for item in root.iter():
+        if local_name(item.tag) != "attribute" or not (attr_id := xmi_idref(item)):
+            continue
+        for tags in item:
+            if local_name(tags.tag) != "tags":
+                continue
+            for tag in tags:
+                value = (tag.get("value") or "").lower()
+                if local_name(tag.tag) == "tag" and tag.get("name") == "nullable" and value in {"true", "false"}:
+                    result[attr_id] = value == "true"
+    return result
+
+
+def parse_attributes(
+    class_element: ET.Element, primitive_types: dict[str, str], nullability: dict[str, bool],
+) -> list[dict[str, Any]]:
     attributes: list[dict[str, Any]] = []
     for child in class_element:
         if local_name(child.tag) != "ownedAttribute" or child.get("association"):
@@ -118,7 +135,7 @@ def parse_attributes(class_element: ET.Element, primitive_types: dict[str, str])
                 "name": name,
                 "type": get_type_name(referenced_type_id(child), primitive_types),
                 "primaryKey": name.lower() in {"id", "codigo"},
-                "nullable": parse_lower_nullable(child),
+                "nullable": nullability.get(xmi_id(child), parse_lower_nullable(child)),
             }
         )
     return attributes
@@ -217,6 +234,7 @@ def collect_classes(
     primitive_types: dict[str, str],
 ) -> tuple[list[dict[str, Any]], set[str], dict[str, ET.Element]]:
     definitions = collect_class_definitions(root)
+    nullability = collect_attribute_nullability(root)
     layout = collect_visible_layout(root, set(definitions))
     selected_ids = list(layout) if layout else list(definitions)
 
@@ -249,7 +267,7 @@ def collect_classes(
                 "data": {
                     "name": element.get("name") or f"Clase{index + 1}",
                     "kind": kind,
-                    "attributes": parse_attributes(element, primitive_types),
+                    "attributes": parse_attributes(element, primitive_types, nullability),
                     "methods": parse_methods(element, primitive_types),
                 },
             }
