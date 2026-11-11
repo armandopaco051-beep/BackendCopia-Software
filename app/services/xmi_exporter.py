@@ -276,7 +276,7 @@ def create_class_element(
                 "isDerivedUnion": "false",
             },
         )
-        nullable = boolean_value(attribute.get("nullable"), True)
+        nullable = boolean_value(attribute.get("nullable"), type_ids is None)
         ET.SubElement(
             owned_attribute,
             "lowerValue",
@@ -595,7 +595,8 @@ def add_ea_attribute_metadata(
     index: int,
 ):
     attr_id = feature_id(node_id, "attribute", index + 1)
-    nullable = boolean_value(attribute.get("nullable"), True)
+    # The editor treats attributes without a nullable flag as single values.
+    nullable = boolean_value(attribute.get("nullable"), False)
     primary_key = boolean_value(
         attribute.get("primaryKey", attribute.get("isPrimaryKey")),
     )
